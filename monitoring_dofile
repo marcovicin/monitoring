@@ -1,0 +1,441 @@
+
+*	Author: 
+*	Project: Household survey with 2 respondents per HH (male, female). Each enumerator interviewed one respondent of same sex.
+*	Purpose: Data Monitoring Example
+*	Date of creation: 
+*	Date of last revision: 
+*	Modified by: 
+
+	clear all
+	set more off
+	capture program drop _all
+	capture log close
+	set maxvar 10000
+	
+	
+	di "`c(hostname)'"
+	
+	local hostname "`c(hostname)'"
+
+	if "`hostname'"=="INSERT HOSTNAME" { 
+			global root "G:/My Drive/project_folder/"
+		} 
+		
+		else if "`hostname'"=="" {    // Insert your hostname
+			global root ""	    // insert your path							
+			
+		} 
+		
+		
+	global monitoring "${root}Data/data monitoring/"
+	global date "`c(current_date)'"
+		
+	
+*	Create a folder and archive the raw .csv dataset
+
+	cap mkdir "${root}Data/archive/csv_${date}"
+	copy "${root}Data/input/raw_dataset.csv" "${root}Data/archive/csv_${date}/raw_dataset.csv" , replace	
+
+	
+*	Preliminary formatting and save in dta format
+*----------------------------------------------------------------------------- *
+															
+
+	capture confirm file "${root}Data/input/daily_backup${date}.dta" 
+	if !_rc {
+	di "backup of raw data already created today "
+	}
+	else {
+	do "${root}Data/input/preliminary_formatting.do"
+
+	}
+
+
+*	Import .dta format raw data
+
+	use "${root}Data/input/daily_backup${date}.dta" , clear
+	drop if today < td(01Apr2025)
+	save "${root}Data/working/daily usefiles/usefile_${date}.dta" , replace
+	 
+
+	 
+*	General Checks 
+*----------------------------------------------------------------------------- *
+
+	
+*	Generate a unique ID variable
+
+	egen respondent_id = concat(hhid hhid_gender)
+	
+*	Drop non-consented surveys 
+
+	drop if consent!=1
+
+
+*	Duplicates observations
+*----------------------------------------------------------------------------- *
+
+	program define dup_observations
+
+	syntax varlist [if], enum_id(varname) today(varname) location(varlist) enum_comments(varlist) save(string) ///
+	start(varname) end(varname) [additional(varlist) force]
+	
+	local dup_observations_time  = date("`c(current_date)'", "DMY")
+	global dup_observations_date = string(`dup_observations_time', "%td_CCYYNNDD")
+
+	duplicates report `varlist' `if'
+	
+	preserve
+	
+		quietly {
+		
+			tempvar dup max_dup
+			duplicates tag `varlist' `if', gen(`dup')
+			egen `max_dup' = max(`dup')
+			
+			if `max_dup' == 0 {
+				noi display "No duplicate observations" 
+			}
+			else if `max_dup' > 0 {
+				keep if `dup' > 0 & `dup' < .
+				capture which keeporder
+				if _rc {
+					ssc install keeporder
+				}
+				
+				gen upload_error = 0
+				foreach v of var `start' {
+					bys `enum_id' `start': replace upload_error = 1 if `start' == `start'[_n+1]
+					bys `enum_id' `start': replace upload_error = 1 if `start' == `start'[_n-1]
+				}
+				capt label def dup_observations_yesno 1"Yes" 0"No"
+				capt label val upload_error dup_observations_yesno
+				sort `enum_id' `start' `end'
+				bys `enum_id' `start': gen submission_number = _n if upload_error == 1
+					
+				capt gen key=_n
+				if !_rc {
+					capt syntax varlist [if], enum_id(varname) today(varname) location(varlist) enum_comments(varlist) save(string) ///
+					start(varname) end(varname) [additional(varlist)] force
+					if _rc {
+						noi display "{err}Variable {res:key} is missing; force option required"
+						exit
+					}
+					else if !_rc {			
+						keeporder `today' `start' `end' `enum_id' `varlist' `additional' `location' `enum_comments' upload_error submission_number
+					}
+				}
+				else if _rc {
+					keeporder `today' `start' `end' `enum_id' `varlist' `additional' `location' key `enum_comments' upload_error submission_number
+				}
+				
+				sort `varlist' `today'
+				export excel "`save'_${date}.xlsm", firstrow(variables) sheet("duplicates",replace)
+				noi display "Duplicate observations exported"
+			}
+		}
+		
+	restore
+		
+end
+
+
+preserve	
+		dup_observations respondent_id, enum_id(enum_id) today(today) location(region province) /// 
+		enum_comments(comments_enum) save("${monitoring}project_monitoring") start(starttime) end(endtime) ///
+		additional(var1 var2 var3 consent) force	
+restore
+
+ 
+
+ 
+*	Variables with text written by enumerators;
+*----------------------------------------------------------------------------- *
+	* Open questions to be reviewed, for typos or important info
+				
+	// Variables in the survey that may contain text
+	local vars_text_list var4 var5 var6 comments_enum 
+
+
+				local exist ""
+				local dont_exist ""
+				foreach v of local  vars_text_list {
+
+					capture confirm variable `v' 
+					
+					if !_rc {
+									   di in green "`v' exists"
+									   local exist "`exist' `v'"
+							 }	
+						else {
+										di in red "`v' does not exist"
+										local dont_exist  "`dont_exist' `v'"
+
+               }
+			   }
+			   
+				di "`exist'"
+				di "`dont_exist'"
+
+		missings dropvars	`exist', force // remove vars which are all empty
+
+				local exist ""
+				local dont_exist ""
+				foreach v of local  vars_text_list {
+					
+					capture confirm variable `v' 
+					
+					if !_rc {
+									   di in green "`v' exists"
+									   local exist "`exist' `v'"
+							 }	
+						else {
+										di in red "`v' does not exist"
+										local dont_exist  "`dont_exist' `v'"
+
+               }
+			   }
+			   
+				di "`exist'"
+				di "`dont_exist'"	   
+			   
+				local vars_text_list `exist'	   
+		
+				di "`vars_text_list'"
+
+		
+	// Here goes a program to output the variables into an excel file	 
+
+	
+
+*	Flags identifiers 
+*----------------------------------------------------------------------------- *
+
+	local flags today zone region province enum_id hhid respondent_id key 
+
+
+*	Geo-Spatial Variation 
+*----------------------------------------------------------------------------- *
+
+
+* Consecutive surveys with short distance 
+	*for each enumerator, check if s/he performs two consecutive surveys at a close distance (also in two consecutive days)
+	*  Cutoff distance can be changed, in meters (100, 150, 200)
+
+	cap program drop consecutive_surveys
+	program define consecutive_surveys 
+
+		syntax, enum_id(varname) today(varname)	starttime(varname) id(varname) gpslatitude(varname) gpslongitude(varname) distance(integer)
+			
+		quietly {
+		
+			preserve
+			
+				bysort `enum_id' (`today' `starttime'): gen surveyorder = _n
+				qui sum surveyorder
+				local max = `r(max)' - 1
+				keep `enum_id' `enum_id' surveyorder `today' `id' `gpslatitude' `gpslongitude' `starttime'
+				reshape wide `id' `today' `gpslatitude' `gpslongitude' `starttime',	///
+					i(`enum_id') j(surveyorder) 
+
+						// Generate Time Difference in Kms
+						
+						local j = 1
+						capture which vincenty										
+						if _rc {
+							ssc install vincenty
+						}															
+						forval i = 1/`max' {
+							local j = `j'+1
+							vincenty `gpslatitude'`i' `gpslongitude'`i' `gpslatitude'`j' `gpslongitude'`j', vin(dist`i') inkm replace
+						}
+						
+				reshape long
+				cap drop if `id' == .
+				cap drop if `id' == ""
+				
+				// Keep if less than `distance' meters from each other
+							
+				foreach var of varlist dist*	{
+					local num = regexr("`var'", "dist", "") 
+					replace `var' = `var' *	1000			// km --> mt
+					replace `var' = . if `var' > `distance' | (int(`num') != surveyorder & int(`num') != surveyorder - 1)  
+				}
+				
+				gen consec_flag_dist = .											
+				forvalues i = 1/`max' {
+					replace consec_flag_dist = dist`i' if dist`i' != . & consec_flag_dist == .
+				}												
+				
+				drop if consec_flag_dist == .
+				drop dist*
+				gen consec_flag = 1
+				rename surveyorder chronol_order_foreach_enum 
+				
+				capt egen consec_pair_distance_rank  = group(consec_flag_dist)	// sort for distance [Jan 2022 mv: in the laterite program it was  consec_pair_num ]		 		
+				
+				label var today "Date"
+				label var `enum_id' "Enumerator ID"
+				label var `id' "Unique ID"
+				label var consec_flag_dist "Distance in Meters"
+				label var consec_flag "Suspicious observation"
+				label var chronol_order_foreach_enum  "Chronological order of surveys by enum"
+				capt label var consec_pair_distance_rank "Pair number of suspicious obs"		
+							
+				tempfile for_merge
+				save `for_merge', replace
+					
+			restore
+					
+			merge 1:1 `id' using `for_merge', nogen
+			
+			replace consec_flag = 0 if missing(consec_flag)
+			
+			noisily di as result "Flagged observations between `distance' meters to each other" 
+			noisily tab consec_flag, m
+			noisily di as result "Flagged distances below `distance' meters"
+			noisily tab consec_flag_dist											
+				
+		}
+				
+	end
+
+	consecutive_surveys, enum_id(enum_id) enum_id(enum_id) today(today) starttime(starttime) id(key) gpslatitude(gps_latitude) gpslongitude(gps_longitude) distance(100)
+
+preserve
+		gen issue_description = "Consecutive survey in less than `distance'm" 
+		keep if consec_flag==1
+
+		keeporder issue_description `flags' consec_flag consec_flag_dist  gps_latitude gps_longitude starttime chronol_order_foreach_enum  consec_pair_distance_rank 
+		
+		bysort enum_id consec_pair_distance_rank:  gen in_different_days =1 if (today[_n]!=today[_n+1]) & (today[_n]!=today[_n-1]) 
+		sort today enum_id 
+		export excel using "${monitoring}project_monitoring_${date}.xlsm", firstrow(variables) sheet("consecutive surveys",replace)
+restore
+	
+		
+
+
+	
+	
+
+
+*	Frequently selected option 999
+*----------------------------------------------------------------------------- *
+
+	capt which findname
+	if _rc {
+	ssc install findname
+	}
+
+	findname *_999						// dummy vars				
+	findname  `r(varlist)', any(@ == 1)
+	
+	gen sum_999 = 0
+	qui foreach v of varlist `r(varlist)' { 
+	replace sum_999 = sum_999 + (`v' == 1) 
+	} 
+
+	replace sum_999=. if sum_999==0 
+		
+		tempfile main_data
+		save `main_data'
+		
+		collapse (sum) sum_999, by(enum_id)
+
+		tempfile data0
+		save `data0'
+
+		
+	use `main_data',clear
+
+	findname, any(@ == -999)					 // numeric variables with -999 selected
+
+	scalar local_count = `:word count `r(varlist)''
+	di local_count
+	
+	if local_count > 0 {
+	di "some answers has -999 selected, this check is activated"
+
+		gen sum_999_numeric = 0
+		qui foreach v of varlist `r(varlist)' {
+		replace sum_999_numeric = sum_999_numeric + (`v' == -999) 
+		}
+		
+		replace sum_999_numeric=. if sum_999_numeric==0
+
+			tempfile main_data
+			save `main_data'
+		
+		collapse (sum) sum_999_numeric, by(enum_id)
+
+			tempfile data1
+			save `data1'
+	
+	
+	
+	use `main_data',clear
+
+	bysort enum_id : gen tot_survey_sofar =_N
+	collapse (mean) tot_survey_sofar, by(enum_id)
+
+	
+		tempfile data2
+		save `data2'
+	
+	
+	use `main_data',clear
+		
+	
+	destring enum_gender,replace
+	collapse  enum_gender, by(enum_id)
+		
+		merge 1:1 enum_id using `data0',nogen
+		merge 1:1 enum_id using `data1',nogen
+		merge 1:1 enum_id using `data2',nogen
+
+					
+		*Average per survey for each enumerator
+
+	gen sum_IDK = sum_999_numeric + sum_999
+	gen sum_IDK_per_survey = sum_IDK/tot_survey_sofar
+	
+	gen flag1 = "More than one 999 selected per survey" if sum_IDK_per_survey>1
+	
+
+		*Percentage of whole (fe/male) team IDK that each enum is responsible for 
+
+	bysort enum_gender: egen pc= pc(sum_IDK) 
+	gen flag2 = "More than 30% of 999 selected for F/M team" if pc>30 
+
+	sum pc if enum_gender ==0
+	display r(sum) // ~100
+		
+	export excel using "${monitoring}project_monitoring_${date}.xlsm", firstrow(variables) sheet("999 per enum",replace)
+	
+	use `main_data',clear
+
+
+
+
+	
+	}
+
+*	Check if var7 is missing *	
+*----------------------------------------------------------------------------- *
+	
+	duplicates tag hhid var7, gen (no_var7)
+
+
+*	ADDITIONAL CHECKS
+*----------------------------------------------------------------------------- *
+	
+*	IQR for specific vars 
+*	Outliers for specific vars 
+*	Outliers in the number of variables with missing values (enum skipping var OR issue in survey coding)
+*	Compare different variables capturing the same data to double check
+
+
+
+*		END OF MONITORING DOFILE *
+***********
