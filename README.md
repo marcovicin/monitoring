@@ -1,3 +1,2 @@
 # monitoring
-Here is an example of a dofile actually used during data collection of household survey.
-The file can be adapted to project monitoring and other kinds of MEL activities.
+This is an example of a Stata dofile that I used during data collection of a household survey in East Africa.
